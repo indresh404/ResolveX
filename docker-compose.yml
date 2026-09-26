@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  resolvex-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resolvex_runner
+    volumes:
+      - ./student_resource:/app/student_resource:ro
+      - ./output:/app/output:rw
+      - ./models:/app/models:rw
+    command: python -m src.generate_outputs --output-dir /app/output
+
+  resolvex-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resolvex_ui
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./student_resource:/app/student_resource:ro
+      - ./output:/app/output:ro
+      - ./models:/app/models:ro
+    command: streamlit run src/app.py --server.port=8501 --server.address=0.0.0.0

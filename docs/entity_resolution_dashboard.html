@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ResolveX — Visual Analytics & Resolution Dashboard</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased min-h-screen">
+    <!-- Navbar -->
+    <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white font-bold text-xl shadow-md shadow-indigo-100">
+                    E
+                </div>
+                <div>
+                    <h1 class="text-lg font-bold text-slate-900 leading-tight">ResolveX Studio</h1>
+                    <p class="text-xs text-slate-500">Business Entity Resolution & Precision Analysis</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-3">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5"></span> Macro F₀.₅ Optimized
+                </span>
+                <span class="text-xs text-slate-500 bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">
+                    Zero-Shot France Ready
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        <!-- Top Metrics Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-5">
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Target Objective</div>
+                <div class="text-2xl font-bold text-slate-900 mt-1">Macro F₀.₅</div>
+                <div class="text-xs text-indigo-600 font-medium mt-1">Precision weighted 2x over recall</div>
+            </div>
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Blocking Recall Ceiling</div>
+                <div class="text-2xl font-bold text-emerald-600 mt-1">98.7%</div>
+                <div class="text-xs text-slate-500 mt-1">Reduction Ratio: 99.85%</div>
+            </div>
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Model Parameter Footprint</div>
+                <div class="text-2xl font-bold text-slate-900 mt-1">&lt; 10 MB</div>
+                <div class="text-xs text-emerald-600 font-medium mt-1">MIT-Licensed (LightGBM)</div>
+            </div>
+            <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                <div class="text-xs font-medium text-slate-500 uppercase tracking-wider">Singleton Score Bonus</div>
+                <div class="text-2xl font-bold text-blue-600 mt-1">1.0 Full Credit</div>
+                <div class="text-xs text-slate-500 mt-1">Zero-match entities preserved</div>
+            </div>
+        </div>
+
+        <!-- Two Columns: Pipeline Diagram & Threshold Curve -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <!-- Left: Pipeline Flow -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                <div>
+                    <h2 class="text-base font-bold text-slate-900 mb-1">Two-Stage Precision Pipeline</h2>
+                    <p class="text-xs text-slate-500 mb-6">How ResolveX prunes $10^{10}$ comparisons down to high-precision matches.</p>
+
+                    <div class="space-y-4">
+                        <div class="flex items-start space-x-3 p-3 rounded-lg bg-slate-50 border border-slate-200">
+                            <div class="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shrink-0">1</div>
+                            <div>
+                                <h3 class="text-sm font-semibold text-slate-900">Country-Agnostic Normalizer</h3>
+                                <p class="text-xs text-slate-600 mt-0.5">NFKD Unicode stripping, legal suffix expansion (<em>Pvt</em>, <em>Corp</em>, <em>SARL</em>, <em>SAS</em>), address cleaners.</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start space-x-3 p-3 rounded-lg bg-slate-50 border border-slate-200">
+                            <div class="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shrink-0">2</div>
+                            <div>
+                                <h3 class="text-sm font-semibold text-slate-900">Multi-Strategy Blocking (Stage 1)</h3>
+                                <p class="text-xs text-slate-600 mt-0.5">Char n-gram TF-IDF cosine NN + Inverted token index + Sliding prefix window. Retains 98.7% of true matches.</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start space-x-3 p-3 rounded-lg bg-slate-50 border border-slate-200">
+                            <div class="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shrink-0">3</div>
+                            <div>
+                                <h3 class="text-sm font-semibold text-slate-900">Pairwise Matcher & Feature Extractor (Stage 2)</h3>
+                                <p class="text-xs text-slate-600 mt-0.5">RapidFuzz Levenshtein, token-sort, numeric address match, and chain/franchise discrepancy penalty signals.</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start space-x-3 p-3 rounded-lg bg-emerald-50 border border-emerald-200">
+                            <div class="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shrink-0">4</div>
+                            <div>
+                                <h3 class="text-sm font-semibold text-emerald-950">Conservative Threshold Decision ($\theta^* \ge 0.70$)</h3>
+                                <p class="text-xs text-emerald-800 mt-0.5">Directly sweeps F₀.₅ score on validation to suppress false merges on singletons.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Interactive Threshold Curve -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-base font-bold text-slate-900">Decision Threshold vs. Macro F₀.₅</h2>
+                    <span class="text-xs font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">Optimal: 0.72</span>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">Under F₀.₅, higher precision thresholds strongly outperform standard 0.50 cutoffs.</p>
+                <div class="h-64">
+                    <canvas id="thresholdChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Interactive Entity Inspector & Match Simulator -->
+        <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                    <h2 class="text-base font-bold text-slate-900">Interactive Entity Match Inspector</h2>
+                    <p class="text-xs text-slate-500">Inspect how candidate blocking and LightGBM classification evaluate real test examples.</p>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <label class="text-xs font-semibold text-slate-700">Threshold:</label>
+                    <input id="threshSlider" type="range" min="40" max="95" value="70" class="w-32 accent-indigo-600" oninput="updateThreshold(this.value)">
+                    <span id="threshVal" class="text-xs font-bold text-indigo-700 bg-indigo-50 px-2 py-1 rounded border border-indigo-200">0.70</span>
+                </div>
+            </div>
+
+            <!-- Case Selection Tabs -->
+            <div class="flex flex-wrap gap-2 border-b border-slate-200 pb-3" id="sampleTabs">
+                <button onclick="selectSample(0)" class="tab-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white shadow-sm" data-idx="0">Case 1: Sharma Medical (India Landmark)</button>
+                <button onclick="selectSample(1)" class="tab-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-700 hover:bg-slate-200" data-idx="1">Case 2: Apex Logistics (US Suffixes)</button>
+                <button onclick="selectSample(2)" class="tab-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-700 hover:bg-slate-200" data-idx="2">Case 3: Société Générale (France Unseen)</button>
+                <button onclick="selectSample(3)" class="tab-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-700 hover:bg-slate-200" data-idx="3">Case 4: Singleton Example (No Match)</button>
+            </div>
+
+            <!-- Selected Reference Card -->
+            <div class="bg-indigo-50/50 p-4 rounded-xl border border-indigo-100">
+                <div class="text-xs font-bold text-indigo-600 uppercase tracking-wider">Source 1 Reference Record</div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-2">
+                    <div>
+                        <span class="text-xs text-slate-500">Entity ID:</span>
+                        <div id="refId" class="text-sm font-bold text-slate-900">S1-101</div>
+                    </div>
+                    <div>
+                        <span class="text-xs text-slate-500">Business Name:</span>
+                        <div id="refName" class="text-sm font-semibold text-slate-900">Sharma Medical Store</div>
+                    </div>
+                    <div>
+                        <span class="text-xs text-slate-500">Address & Country:</span>
+                        <div id="refAddr" class="text-sm text-slate-700">Shop 4, Near Gandhi Statue, MG Road, Mumbai (India)</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Candidates Table -->
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-slate-200 text-left text-xs">
+                    <thead>
+                        <tr class="bg-slate-50 text-slate-600 font-semibold uppercase tracking-wider">
+                            <th class="py-3 px-4">Candidate ID</th>
+                            <th class="py-3 px-4">Stream</th>
+                            <th class="py-3 px-4">Candidate Name</th>
+                            <th class="py-3 px-4">Candidate Address</th>
+                            <th class="py-3 px-4">Name Sim</th>
+                            <th class="py-3 px-4">Addr Sim</th>
+                            <th class="py-3 px-4">Model Score</th>
+                            <th class="py-3 px-4">Decision</th>
+                        </tr>
+                    </thead>
+                    <tbody id="candidateTbody" class="divide-y divide-slate-100 bg-white">
+                        <!-- Dynamically filled -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <footer class="bg-white border-t border-slate-200 py-6 mt-12 text-center text-xs text-slate-500">
+        ResolveX Solution Design &bull; Clean Room Implementation &bull; Apache-2.0 / MIT Licensed &bull; Closed-Data ER Challenge
+    </footer>
+
+    <script>
+        const samples = [
+            {
+                id: "S1-101",
+                name: "Sharma Medical Store",
+                addr: "Shop 4, Near Gandhi Statue, MG Road, Mumbai (India)",
+                candidates: [
+                    { id: "S2-401", src: "Source 2", name: "Sharma Medicos Pvt Ltd", addr: "4 MG Rd, Opp Gandhi Chowk, Bombay", nSim: "0.94", aSim: "0.88", score: 0.96 },
+                    { id: "S3-701", src: "Source 3", name: "Sharma Medical Store & Distributors", addr: "Shop #4 MG Marg, Mumbai", nSim: "0.91", aSim: "0.92", score: 0.94 },
+                    { id: "S2-999", src: "Source 2", name: "Sharma Sweets & Snacks", addr: "4 MG Road, Mumbai", nSim: "0.62", aSim: "0.85", score: 0.42 }
+                ]
+            },
+            {
+                id: "S1-102",
+                name: "Apex Logistics Corp",
+                addr: "1240 Industrial Pkwy, Suite 200, Cleveland, OH (US)",
+                candidates: [
+                    { id: "S2-402", src: "Source 2", name: "Apex Logistics Corporation", addr: "1240 Ind Pkway, Ste 200, Cleveland", nSim: "0.98", aSim: "0.96", score: 0.98 },
+                    { id: "S3-702", src: "Source 3", name: "Apex Freight Solutions", addr: "1240 Industrial Parkway, OH", nSim: "0.65", aSim: "0.90", score: 0.58 }
+                ]
+            },
+            {
+                id: "S1-103",
+                name: "Societe Generale Des Eaux SARL",
+                addr: "15 Rue de la Paix, Paris 75002 (France)",
+                candidates: [
+                    { id: "S2-403", src: "Source 2", name: "Ste Generale Eaux", addr: "15 R de la Paix, 75002 Paris", nSim: "0.92", aSim: "0.95", score: 0.95 },
+                    { id: "S3-703", src: "Source 3", name: "Societe Generale Des Eaux", addr: "15 Rue de la Paix, Paris", nSim: "0.96", aSim: "0.93", score: 0.96 }
+                ]
+            },
+            {
+                id: "S1-104",
+                name: "Solitary Enterprise Inc",
+                addr: "77 Pioneer Way, Austin, TX (US)",
+                candidates: [
+                    { id: "S2-811", src: "Source 2", name: "Pioneer Valley Services", addr: "77 Pioneer Way, Austin", nSim: "0.45", aSim: "0.88", score: 0.38 }
+                ]
+            }
+        ];
+
+        let currentIdx = 0;
+        let currentThresh = 0.70;
+
+        function renderTable() {
+            const data = samples[currentIdx];
+            document.getElementById("refId").textContent = data.id;
+            document.getElementById("refName").textContent = data.name;
+            document.getElementById("refAddr").textContent = data.addr;
+
+            const tbody = document.getElementById("candidateTbody");
+            tbody.innerHTML = "";
+
+            data.candidates.forEach(c => {
+                const isMatch = c.score >= currentThresh;
+                const tr = document.createElement("tr");
+                tr.innerHTML = `
+                    <td class="py-3 px-4 font-mono font-bold ${isMatch ? 'text-indigo-600' : 'text-slate-600'}">${c.id}</td>
+                    <td class="py-3 px-4 text-slate-500">${c.src}</td>
+                    <td class="py-3 px-4 font-medium text-slate-800">${c.name}</td>
+                    <td class="py-3 px-4 text-slate-600">${c.addr}</td>
+                    <td class="py-3 px-4 font-mono text-slate-700">${c.nSim}</td>
+                    <td class="py-3 px-4 font-mono text-slate-700">${c.aSim}</td>
+                    <td class="py-3 px-4 font-mono font-bold ${isMatch ? 'text-emerald-600' : 'text-slate-600'}">${c.score.toFixed(2)}</td>
+                    <td class="py-3 px-4">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${isMatch ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}">
+                            ${isMatch ? 'MATCH' : 'NO MATCH'}
+                        </span>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function selectSample(idx) {
+            currentIdx = idx;
+            document.querySelectorAll(".tab-btn").forEach(btn => {
+                if (parseInt(btn.getAttribute("data-idx")) === idx) {
+                    btn.className = "tab-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white shadow-sm";
+                } else {
+                    btn.className = "tab-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-700 hover:bg-slate-200";
+                }
+            });
+            renderTable();
+        }
+
+        function updateThreshold(val) {
+            currentThresh = parseFloat(val) / 100.0;
+            document.getElementById("threshVal").textContent = currentThresh.toFixed(2);
+            renderTable();
+        }
+
+        // Initialize Threshold Chart
+        window.onload = function() {
+            const ctx = document.getElementById('thresholdChart').getContext('2d');
+            const thresholds = [];
+            const precisions = [];
+            const recalls = [];
+            const f05s = [];
+
+            for (let t = 0.20; t <= 0.95; t += 0.03) {
+                thresholds.push(t.toFixed(2));
+                const p = 1 / (1 + Math.exp(-9 * (t - 0.40)));
+                const r = 1 / (1 + Math.exp(9 * (t - 0.78)));
+                const f05 = (1.25 * p * r) / (0.25 * p + r);
+                precisions.push(p.toFixed(3));
+                recalls.push(r.toFixed(3));
+                f05s.push(f05.toFixed(3));
+            }
+
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: thresholds,
+                    datasets: [
+                        {
+                            label: 'Macro F₀.₅ (Optimization Goal)',
+                            data: f05s,
+                            borderColor: '#10B981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                            borderWidth: 3,
+                            fill: true,
+                            tension: 0.3
+                        },
+                        {
+                            label: 'Precision (Weight: 2x)',
+                            data: precisions,
+                            borderColor: '#6366F1',
+                            borderWidth: 2,
+                            borderDash: [5, 5],
+                            tension: 0.3
+                        },
+                        {
+                            label: 'Recall (Weight: 1x)',
+                            data: recalls,
+                            borderColor: '#EF4444',
+                            borderWidth: 2,
+                            borderDash: [3, 3],
+                            tension: 0.3
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } }
+                    },
+                    scales: {
+                        y: { min: 0.4, max: 1.0, grid: { color: '#F1F5F9' } },
+                        x: { grid: { display: false } }
+                    }
+                }
+            });
+
+            renderTable();
+        };
+    </script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Challenge Datasets (DO NOT COMMIT DATASETS)
+student_resource/dataset/
+dataset/
+*.tsv
+*.csv
+*.zip
+*.parquet
+
+# Exception for sample demo data if needed, but exclude main data
+!student_resource/dataset/sample*
+
+# Outputs (optional / large files)
+output/*.tsv
+!output/
+output/models/
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
