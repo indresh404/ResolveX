@@ -1,0 +1,31 @@
+{
+  "optimal_threshold": 0.4,
+  "feature_columns": [
+    "name_lev",
+    "name_token_set",
+    "name_token_sort",
+    "name_partial",
+    "name_exact",
+    "name_pfx_3",
+    "name_len_diff",
+    "addr_lev",
+    "addr_token_set",
+    "addr_token_sort",
+    "addr_partial",
+    "addr_exact",
+    "addr_len_diff",
+    "num_jaccard",
+    "has_common_num",
+    "country_match",
+    "is_s2",
+    "is_s3",
+    "name_addr_interaction",
+    "name_high_addr_low",
+    "name_low_addr_high"
+  ],
+  "val_macro_f05": 0.6876176819938501,
+  "val_precision": 0.8052884615384616,
+  "val_recall": 0.5006066849816849,
+  "blocking_recall": 0.7790368271954674,
+  "reduction_ratio": 0.9999948887054044
+}

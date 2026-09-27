@@ -1,197 +1,210 @@
 """
-Blocking (Candidate Generation) Module for Business Entity Resolution.
+Scalable Multi-Strategy Candidate Blocking for Amazon-Scale Business Entity Resolution.
 
-Implements multi-strategy candidate generation:
-1. TF-IDF Character n-gram Cosine Similarity
-2. Inverted Index Token Overlap (Jaccard)
-3. Sorted Neighborhood Prefix Windowing
-4. Country-partitioned candidate filtering
-
-Goal: High Pair Completeness (Recall >= 0.98) with High Reduction Ratio.
+High-Speed Inverted Index with One-Time Indexing and Fast Vectorized Queries:
+- Indexing 10M S2/S3 records is performed ONCE in memory with minimal memory footprint
+- Direct hash lookups with frequency capping (prevents high RAM explosion)
+- Ultra-low RAM dictionary referencing and aggressive garbage collection
 """
 
-import math
+import gc
 from collections import defaultdict
 from typing import Dict, List, Set, Tuple
-import numpy as np
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.neighbors import NearestNeighbors
-from tqdm import tqdm
+from rapidfuzz import fuzz
 
 
-class MultiStrategyBlocker:
+class ScalableMultiStrategyBlocker:
+    """
+    Amazon-scale entity resolution blocker.
+    Linear O(N) indexing with hit accumulation and frequency-capped inverted lists.
+    Optimized for low-RAM streaming footprint.
+    """
     def __init__(
         self,
-        top_k_tfidf: int = 25,
-        tfidf_ngram_range: Tuple[int, int] = (2, 4),
-        window_size: int = 10,
+        max_candidates_per_s1: int = 8,
         min_token_len: int = 3,
-        max_token_freq_ratio: float = 0.05,
+        max_key_freq: int = 8000,
+        min_similarity_floor: float = 0.30
     ):
-        self.top_k_tfidf = top_k_tfidf
-        self.tfidf_ngram_range = tfidf_ngram_range
-        self.window_size = window_size
+        self.max_candidates_per_s1 = max_candidates_per_s1
         self.min_token_len = min_token_len
-        self.max_token_freq_ratio = max_token_freq_ratio
-
-    def _build_inverted_index(self, s23_df: pd.DataFrame) -> Dict[str, List[str]]:
-        """Build token -> list of S2/S3 entity_ids index."""
-        token_to_ids = defaultdict(list)
-        total_docs = len(s23_df)
-        max_freq = max(5, int(total_docs * self.max_token_freq_ratio))
-
-        # First pass: count token frequencies
-        token_counts = defaultdict(int)
-        for _, row in s23_df.iterrows():
-            tokens = set(row['norm_name'].split())
-            for t in tokens:
-                if len(t) >= self.min_token_len:
-                    token_counts[t] += 1
-
-        # Second pass: index only non-frequent significant tokens
-        for _, row in s23_df.iterrows():
-            eid = row['entity_id']
-            tokens = set(row['norm_name'].split())
-            for t in tokens:
-                if len(t) >= self.min_token_len and token_counts[t] <= max_freq:
-                    token_to_ids[t].append(eid)
-
-        return token_to_ids
-
-    def _get_token_candidates(
-        self, s1_df: pd.DataFrame, token_to_ids: Dict[str, List[str]]
-    ) -> Dict[str, Set[str]]:
-        """Find candidate matches for each S1 entity using token overlap."""
-        candidates = defaultdict(set)
-        for _, row in s1_df.iterrows():
-            s1_id = row['entity_id']
-            tokens = set(row['norm_name'].split())
-            for t in tokens:
-                if t in token_to_ids:
-                    for s23_id in token_to_ids[t]:
-                        candidates[s1_id].add(s23_id)
-        return candidates
-
-    def _get_tfidf_candidates(
-        self, s1_df: pd.DataFrame, s23_df: pd.DataFrame
-    ) -> Dict[str, Set[str]]:
-        """Generate candidates using character n-gram TF-IDF Nearest Neighbors."""
-        candidates = defaultdict(set)
-        if s1_df.empty or s23_df.empty:
-            return candidates
-
-        vectorizer = TfidfVectorizer(
-            analyzer='char_wb',
-            ngram_range=self.tfidf_ngram_range,
-            min_df=1,
-            sublinear_tf=True
-        )
-
-        all_names = list(s23_df['norm_name'].values) + list(s1_df['norm_name'].values)
-        vectorizer.fit(all_names)
-
-        s23_matrix = vectorizer.transform(s23_df['norm_name'].values)
-        s1_matrix = vectorizer.transform(s1_df['norm_name'].values)
-
-        k = min(self.top_k_tfidf, s23_matrix.shape[0])
-        nn = NearestNeighbors(n_neighbors=k, metric='cosine', algorithm='brute', n_jobs=-1)
-        nn.fit(s23_matrix)
-
-        distances, indices = nn.kneighbors(s1_matrix)
-
-        s1_ids = s1_df['entity_id'].values
-        s23_ids = s23_df['entity_id'].values
-
-        for i, s1_id in enumerate(s1_ids):
-            for neighbor_idx in indices[i]:
-                candidates[s1_id].add(s23_ids[neighbor_idx])
-
-        return candidates
-
-    def _get_sorted_neighborhood_candidates(
-        self, s1_df: pd.DataFrame, s23_df: pd.DataFrame
-    ) -> Dict[str, Set[str]]:
-        """Generate candidates via sliding window on alphabetically sorted normalized names."""
-        candidates = defaultdict(set)
+        self.max_key_freq = max_key_freq
+        self.min_similarity_floor = min_similarity_floor
         
-        combined = []
-        for _, row in s1_df.iterrows():
-            combined.append((row['norm_name'], 'S1', row['entity_id']))
-        for _, row in s23_df.iterrows():
-            combined.append((row['norm_name'], 'S23', row['entity_id']))
+        self.is_indexed = False
+        self.s23_dict = None
+        self.inverted_index = {}
+        self.num_index = {}
 
-        # Sort combined records by normalized name
-        combined.sort(key=lambda x: x[0])
+    def fit_from_dict(self, s23_dict: Dict[str, Tuple], desc: str = "Candidate Index"):
+        """
+        Builds the inverted index directly from the shared s23_dict without memory duplication.
+        s23_dict: eid -> (norm_name, norm_addr, norm_country, addr_numbers)
+        """
+        print(f"[{desc}] Building index across {len(s23_dict):,} candidate stream records...")
+        self.s23_dict = s23_dict
 
-        w = self.window_size
-        n = len(combined)
+        inv_idx = defaultdict(list)
+        num_idx = defaultdict(list)
+        min_tok_len = self.min_token_len
 
-        for i in range(n):
-            name_i, src_i, id_i = combined[i]
-            if src_i != 'S1':
+        for eid, (name, addr, country, nums) in s23_dict.items():
+            if len(name) >= 4:
+                inv_idx[(country, 'pfx4', name[:4])].append(eid)
+            elif len(name) >= 3:
+                inv_idx[(country, 'pfx3', name[:3])].append(eid)
+
+            # Up to 4 significant tokens per entity
+            tokens = set(name.split())
+            tok_count = 0
+            for t in tokens:
+                if len(t) >= min_tok_len:
+                    inv_idx[(country, 'tok', t)].append(eid)
+                    tok_count += 1
+                    if tok_count >= 4:
+                        break
+
+            # Numeric address tokens (up to 2 numbers)
+            for num in nums[:2]:
+                if len(num) >= 2:
+                    num_idx[(country, num)].append(eid)
+
+        # Prune high-frequency uninformative keys to keep memory minimal
+        max_freq = self.max_key_freq
+        self.inverted_index = {k: v for k, v in inv_idx.items() if len(v) <= max_freq}
+        self.num_index = {k: v for k, v in num_idx.items() if len(v) <= max_freq}
+        del inv_idx, num_idx
+        gc.collect()
+
+        self.is_indexed = True
+        print(f"[{desc}] Index built successfully ({len(self.inverted_index):,} keys)!")
+
+    def fit(self, s2_df: pd.DataFrame, s3_df: pd.DataFrame, desc: str = "Stream Indexing"):
+        """
+        Builds index from DataFrames (backward compatible).
+        """
+        s23_dict = {}
+        for eid, name, addr, country, nums in zip(
+            s2_df['entity_id'], s2_df['norm_name'], s2_df['norm_addr'], s2_df['norm_country'], s2_df['addr_numbers']
+        ):
+            s23_dict[eid] = (name, addr, country, tuple(nums))
+        for eid, name, addr, country, nums in zip(
+            s3_df['entity_id'], s3_df['norm_name'], s3_df['norm_addr'], s3_df['norm_country'], s3_df['addr_numbers']
+        ):
+            s23_dict[eid] = (name, addr, country, tuple(nums))
+        self.fit_from_dict(s23_dict, desc=desc)
+
+    def generate_candidates_for_ids(
+        self,
+        s1_eids: List[str],
+        s1_dict: Dict[str, Tuple]
+    ) -> Dict[str, List[str]]:
+        """
+        Fast candidate retrieval for a list of S1 entity IDs using s1_dict.
+        """
+        result_candidates = {}
+        inv_get = self.inverted_index.get
+        num_get = self.num_index.get
+        s23_dict = self.s23_dict
+        min_tok_len = self.min_token_len
+        min_floor = self.min_similarity_floor
+        max_cands = self.max_candidates_per_s1
+
+        for s1_id in s1_eids:
+            s1_info = s1_dict.get(s1_id)
+            if not s1_info:
+                result_candidates[s1_id] = []
+                continue
+            s1_name, s1_addr, country, s1_nums = s1_info
+
+            candidate_hits = {}
+
+            # 1. Prefix key lookups
+            if len(s1_name) >= 4:
+                pfx4_list = inv_get((country, 'pfx4', s1_name[:4]))
+                if pfx4_list:
+                    for cid in pfx4_list:
+                        candidate_hits[cid] = candidate_hits.get(cid, 0) + 2
+            elif len(s1_name) >= 3:
+                pfx3_list = inv_get((country, 'pfx3', s1_name[:3]))
+                if pfx3_list:
+                    for cid in pfx3_list:
+                        candidate_hits[cid] = candidate_hits.get(cid, 0) + 2
+
+            # 2. Token lookups
+            tok_count = 0
+            for t in set(s1_name.split()):
+                if len(t) >= min_tok_len:
+                    t_list = inv_get((country, 'tok', t))
+                    if t_list:
+                        for cid in t_list:
+                            candidate_hits[cid] = candidate_hits.get(cid, 0) + 1
+                    tok_count += 1
+                    if tok_count >= 4:
+                        break
+
+            # 3. Numeric address lookup
+            for num in s1_nums[:2]:
+                if len(num) >= 2:
+                    n_list = num_get((country, num))
+                    if n_list:
+                        for cid in n_list:
+                            candidate_hits[cid] = candidate_hits.get(cid, 0) + 1
+
+            if not candidate_hits:
+                result_candidates[s1_id] = []
                 continue
 
-            # Slide window around index i
-            start_idx = max(0, i - w)
-            end_idx = min(n, i + w + 1)
+            # Pick top candidates with highest shared hits
+            if len(candidate_hits) <= 12:
+                top_hit_candidates = list(candidate_hits.keys())
+            else:
+                top_hit_candidates = sorted(candidate_hits, key=candidate_hits.get, reverse=True)[:12]
 
-            for j in range(start_idx, end_idx):
-                if j == i:
+            # Fast fuzzy refinement
+            scored_candidates = []
+            for cand_id in top_hit_candidates:
+                cand_info = s23_dict.get(cand_id)
+                if not cand_info:
                     continue
-                name_j, src_j, id_j = combined[j]
-                if src_j == 'S23':
-                    # Check if prefix matches or similarity is reasonable
-                    if name_i[:3] == name_j[:3] or abs(len(name_i) - len(name_j)) <= 3:
-                        candidates[id_i].add(id_j)
+                c_name, c_addr, _, _ = cand_info
+                name_sim = fuzz.token_set_ratio(s1_name, c_name) / 100.0
+                if name_sim < 0.25:
+                    continue
+                addr_sim = fuzz.token_set_ratio(s1_addr, c_addr) / 100.0
+                combined_score = 0.65 * name_sim + 0.35 * addr_sim
 
-        return candidates
+                if combined_score >= min_floor or name_sim >= 0.70:
+                    scored_candidates.append((cand_id, combined_score))
+
+            if scored_candidates:
+                scored_candidates.sort(key=lambda x: x[1], reverse=True)
+                result_candidates[s1_id] = [cid for cid, score in scored_candidates[:max_cands]]
+            else:
+                result_candidates[s1_id] = []
+
+        return result_candidates
 
     def generate_candidates(
         self,
         s1_df: pd.DataFrame,
-        s2_df: pd.DataFrame,
-        s3_df: pd.DataFrame
+        s2_df: pd.DataFrame = None,
+        s3_df: pd.DataFrame = None,
+        desc: str = "Blocking"
     ) -> Dict[str, List[str]]:
-        """
-        Run multi-strategy candidate generation partitioned by normalized country.
-        Returns mapping: s1_entity_id -> list of candidate S2/S3 entity_ids.
-        """
-        # Combine S2 and S3
-        s23_df = pd.concat([s2_df, s3_df], ignore_index=True)
+        if not self.is_indexed:
+            if s2_df is None or s3_df is None:
+                raise ValueError("Must provide s2_df and s3_df on first run to index streams.")
+            self.fit(s2_df, s3_df, desc="Initial Indexing")
+        s1_dict = {
+            eid: (name, addr, country, nums)
+            for eid, name, addr, country, nums in zip(
+                s1_df['entity_id'], s1_df['norm_name'], s1_df['norm_addr'], s1_df['norm_country'], s1_df['addr_numbers']
+            )
+        }
+        return self.generate_candidates_for_ids(s1_df['entity_id'].tolist(), s1_dict)
 
-        final_candidates = defaultdict(set)
 
-        # Partition by country to speed up and improve precision
-        countries = set(s1_df['norm_country'].unique()).union(set(s23_df['norm_country'].unique()))
-
-        for country in countries:
-            sub_s1 = s1_df[s1_df['norm_country'] == country]
-            sub_s23 = s23_df[s23_df['norm_country'] == country]
-
-            if sub_s1.empty or sub_s23.empty:
-                # Handle cases with no country match or unknown
-                sub_s23 = s23_df
-
-            # Strategy 1: TF-IDF
-            tfidf_cands = self._get_tfidf_candidates(sub_s1, sub_s23)
-
-            # Strategy 2: Token Inverted Index
-            token_index = self._build_inverted_index(sub_s23)
-            token_cands = self._get_token_candidates(sub_s1, token_index)
-
-            # Strategy 3: Sorted Neighborhood
-            sn_cands = self._get_sorted_neighborhood_candidates(sub_s1, sub_s23)
-
-            # Union candidates per S1 entity
-            for _, row in sub_s1.iterrows():
-                s1_id = row['entity_id']
-                unioned = tfidf_cands[s1_id].union(token_cands[s1_id]).union(sn_cands[s1_id])
-                final_candidates[s1_id].update(unioned)
-
-        # Ensure every S1 record has an entry in output (even if empty)
-        result = {}
-        for s1_id in s1_df['entity_id']:
-            result[s1_id] = sorted(list(final_candidates[s1_id]))
-
-        return result
+# Backward compatibility alias
+MultiStrategyBlocker = ScalableMultiStrategyBlocker

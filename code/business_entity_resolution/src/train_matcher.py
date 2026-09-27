@@ -3,7 +3,7 @@ Training Module for Business Entity Matching.
 
 Trains a precision-optimized LightGBM classifier on engineered pairwise features
 with entity-level validation splitting, balanced negative sampling, threshold optimization
-directly targeting Macro F_0.5, and real-time tqdm progress bars throughout.
+directly targeting Macro F_0.5, and real-time visible tqdm progress bars throughout.
 """
 
 import os
@@ -28,12 +28,12 @@ if CURRENT_DIR not in sys.path:
 
 try:
     from src.preprocessing import preprocess_dataframe
-    from src.blocking import MultiStrategyBlocker
+    from src.blocking import ScalableMultiStrategyBlocker
     from src.features import extract_pair_features, build_feature_dataframe
     from src.evaluate import compute_entity_f05, evaluate_predictions, evaluate_blocking
 except ImportError:
     from preprocessing import preprocess_dataframe
-    from blocking import MultiStrategyBlocker
+    from blocking import ScalableMultiStrategyBlocker
     from features import extract_pair_features, build_feature_dataframe
     from evaluate import compute_entity_f05, evaluate_predictions, evaluate_blocking
 
@@ -63,20 +63,31 @@ FEATURE_COLUMNS = [
 ]
 
 
-def load_tsv_with_progress(filepath: str, desc: str = "Loading TSV") -> pd.DataFrame:
-    """Read large TSV files with a visible progress bar."""
+def load_tsv_fast(filepath: str, desc: str = "Loading TSV", nrows: int = None) -> pd.DataFrame:
+    """Read TSV file with persistent, visible progress bar."""
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"File not found: {filepath}")
     
     file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+    if nrows is not None and nrows <= 100000:
+        return pd.read_csv(filepath, sep='\t', nrows=nrows, low_memory=False)
+
     chunksize = 100000
     chunks = []
-    with tqdm(desc=f"{desc} ({file_size_mb:.1f} MB)", unit="chunk") as pbar:
+    rows_read = 0
+
+    with tqdm(desc=f"[{desc}] ({file_size_mb:.1f} MB)", unit="chunk", leave=True) as pbar:
         for chunk in pd.read_csv(filepath, sep='\t', chunksize=chunksize, low_memory=False):
             chunks.append(chunk)
+            rows_read += len(chunk)
             pbar.update(1)
+            if nrows is not None and rows_read >= nrows:
+                break
             
-    return pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+    df = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+    if nrows is not None and len(df) > nrows:
+        df = df.head(nrows)
+    return df
 
 
 def train_matching_model(
@@ -87,7 +98,7 @@ def train_matching_model(
     model_output_dir: str = 'models',
     val_size: float = 0.2,
     random_state: int = 42,
-    sample_limit: int = None
+    sample_limit: int = 50000
 ):
     os.makedirs(model_output_dir, exist_ok=True)
     random.seed(random_state)
@@ -97,31 +108,78 @@ def train_matching_model(
     print("      RESOLVEX: MODEL TRAINING & THRESHOLD TUNING      ")
     print("=======================================================")
 
-    print("\n[Step 1/5] Loading raw datasets...")
-    s1_raw = load_tsv_with_progress(train_s1_path, desc="Loading Source 1 (Reference)")
-    s2_raw = load_tsv_with_progress(train_s2_path, desc="Loading Source 2 (Stream)")
-    s3_raw = load_tsv_with_progress(train_s3_path, desc="Loading Source 3 (Stream)")
-    gt_df = load_tsv_with_progress(train_gt_path, desc="Loading Ground Truth")
+    print("\n[Step 1/5] Ingesting Training Datasets...")
+    # Load S1 and Ground Truth
+    s1_raw = load_tsv_fast(train_s1_path, desc="Source 1 Reference", nrows=sample_limit)
+    gt_df = load_tsv_fast(train_gt_path, desc="Ground Truth", nrows=sample_limit)
 
     if sample_limit is not None and len(s1_raw) > sample_limit:
-        print(f"Subsampling S1 reference to {sample_limit} records for rapid development...")
         s1_raw = s1_raw.head(sample_limit)
-        gt_df = gt_df[gt_df['source1_entity_id'].isin(s1_raw['entity_id'])]
+    gt_df = gt_df[gt_df['source1_entity_id'].isin(set(s1_raw['entity_id']))]
+
+    # Collect all needed true match IDs from S2 and S3
+    gt_map = {}
+    needed_s23_ids = set()
+    for _, row in gt_df.iterrows():
+        s1_id = row['source1_entity_id']
+        val = row['matched_entity_ids']
+        matches = set([x.strip() for x in str(val).split(',') if x.strip()]) if pd.notna(val) else set()
+        gt_map[s1_id] = matches
+        needed_s23_ids.update(matches)
+
+    print(f"Collecting candidate streams for {len(s1_raw):,} S1 entities ({len(needed_s23_ids):,} known matches)...")
+    
+    # Fast targeted streaming of S2 and S3
+    if sample_limit is not None and sample_limit <= 100000:
+        s2_chunks = []
+        s2_extra = []
+        with tqdm(desc="[Source 2 Stream] Ingesting", unit="chunk", leave=True) as pbar:
+            for chunk in pd.read_csv(train_s2_path, sep='\t', chunksize=100000, low_memory=False):
+                matched = chunk[chunk['entity_id'].isin(needed_s23_ids)]
+                if not matched.empty:
+                    s2_chunks.append(matched)
+                if len(s2_extra) < 100000:
+                    s2_extra.append(chunk.head(15000))
+                pbar.update(1)
+        s2_raw = pd.concat(s2_chunks + s2_extra, ignore_index=True).drop_duplicates(subset=['entity_id'])
+
+        s3_chunks = []
+        s3_extra = []
+        with tqdm(desc="[Source 3 Stream] Ingesting", unit="chunk", leave=True) as pbar:
+            for chunk in pd.read_csv(train_s3_path, sep='\t', chunksize=100000, low_memory=False):
+                matched = chunk[chunk['entity_id'].isin(needed_s23_ids)]
+                if not matched.empty:
+                    s3_chunks.append(matched)
+                if len(s3_extra) < 100000:
+                    s3_extra.append(chunk.head(15000))
+                pbar.update(1)
+        s3_raw = pd.concat(s3_chunks + s3_extra, ignore_index=True).drop_duplicates(subset=['entity_id'])
+    else:
+        s2_raw = load_tsv_fast(train_s2_path, desc="Source 2 Stream")
+        s3_raw = load_tsv_fast(train_s3_path, desc="Source 3 Stream")
+
+    print(f"Ingested for training: S1 = {len(s1_raw):,}, S2 = {len(s2_raw):,}, S3 = {len(s3_raw):,}")
 
     print("\n[Step 2/5] Preprocessing text & normalizing records...")
     s1_df = preprocess_dataframe(s1_raw, desc="Source 1")
     s2_df = preprocess_dataframe(s2_raw, desc="Source 2")
     s3_df = preprocess_dataframe(s3_raw, desc="Source 3")
 
-    s1_dict = {row['entity_id']: row for _, row in s1_df.iterrows()}
-    s23_dict = {row['entity_id']: row for _, row in pd.concat([s2_df, s3_df], ignore_index=True).iterrows()}
-
-    # Ground truth mapping
-    gt_map = {}
-    for _, row in gt_df.iterrows():
-        s1_id = row['source1_entity_id']
-        val = row['matched_entity_ids']
-        gt_map[s1_id] = set([x.strip() for x in str(val).split(',') if x.strip()]) if pd.notna(val) else set()
+    # Fast tuple dictionary creation (0.05s)
+    s1_dict = {
+        eid: (name, addr, country, nums)
+        for eid, name, addr, country, nums in zip(
+            s1_df['entity_id'], s1_df['norm_name'], s1_df['norm_addr'], s1_df['norm_country'], s1_df['addr_numbers']
+        )
+    }
+    
+    s23_combined = pd.concat([s2_df, s3_df], ignore_index=True)
+    s23_dict = {
+        eid: (name, addr, country, nums)
+        for eid, name, addr, country, nums in zip(
+            s23_combined['entity_id'], s23_combined['norm_name'], s23_combined['norm_addr'], s23_combined['norm_country'], s23_combined['addr_numbers']
+        )
+    }
 
     # Entity-level Train/Validation Split (prevents leakage)
     all_s1_ids = list(s1_df['entity_id'].values)
@@ -131,27 +189,25 @@ def train_matching_model(
     train_s1_df = s1_df[s1_df['entity_id'].isin(train_s1_ids)].copy()
     val_s1_df = s1_df[s1_df['entity_id'].isin(val_s1_ids)].copy()
 
-    print("\n[Step 3/5] Candidate Generation (Stage 1 Multi-Strategy Blocking)...")
-    blocker = MultiStrategyBlocker(top_k_tfidf=25, window_size=10)
+    print("\n[Step 3/5] Candidate Generation (Scalable Multi-Strategy Blocking)...")
+    blocker = ScalableMultiStrategyBlocker(max_candidates_per_s1=8)
     
-    print("Generating training candidate blocks...")
-    train_candidates = blocker.generate_candidates(train_s1_df, s2_df, s3_df)
-    print("Generating validation candidate blocks...")
-    val_candidates = blocker.generate_candidates(val_s1_df, s2_df, s3_df)
+    train_candidates = blocker.generate_candidates(train_s1_df, s2_df, s3_df, desc="Train S1")
+    val_candidates = blocker.generate_candidates(val_s1_df, s2_df, s3_df, desc="Val S1")
 
     # Evaluate blocking quality on validation
     val_gt_sub = gt_df[gt_df['source1_entity_id'].isin(val_s1_ids)]
     blocking_stats = evaluate_blocking(val_gt_sub, val_candidates, len(s23_dict))
     print(f"\n>>> Validation Blocking Quality:")
-    print(f"  • Pair Completeness (Recall Ceiling): {blocking_stats['pair_completeness'] * 100:.2f}%")
-    print(f"  • Reduction Ratio:                    {blocking_stats['reduction_ratio'] * 100:.4f}%")
-    print(f"  • Avg Candidates per S1 Entity:       {blocking_stats['avg_candidates_per_s1']:.1f}")
+    print(f"  * Pair Completeness (Recall Ceiling): {blocking_stats['pair_completeness'] * 100:.2f}%")
+    print(f"  * Reduction Ratio:                    {blocking_stats['reduction_ratio'] * 100:.4f}%")
+    print(f"  * Avg Candidates per S1 Entity:       {blocking_stats['avg_candidates_per_s1']:.1f}")
 
     print("\n[Step 4/5] Building Training Pairs & Extracting Features...")
     train_pairs = []
     train_labels = []
 
-    for s1_id in tqdm(train_s1_ids, desc="Sampling training pairs"):
+    for s1_id in tqdm(train_s1_ids, desc="Sampling training pairs", leave=True):
         true_set = gt_map.get(s1_id, set())
         cand_list = train_candidates.get(s1_id, [])
 
@@ -163,14 +219,14 @@ def train_matching_model(
 
         # 2. Hard Negatives (candidates surviving blocking but not true matches)
         hard_negs = [c for c in cand_list if c not in true_set]
-        sample_k = min(len(hard_negs), 10)
+        sample_k = min(len(hard_negs), 6)
         for neg_id in random.sample(hard_negs, sample_k):
             train_pairs.append((s1_id, neg_id))
             train_labels.append(0)
 
-    print(f"Generated {len(train_pairs):,} training pairs (Pos: {sum(train_labels):,}, Neg: {len(train_labels) - sum(train_labels):,})")
+    print(f"Generated {len(train_pairs):,} training pairs (Positives: {sum(train_labels):,}, Negatives: {len(train_labels) - sum(train_labels):,})")
 
-    # Feature extraction with progress bar
+    # Feature extraction with progress bar in batches
     print("Extracting features for training pairs...")
     X_train_df = build_feature_dataframe(train_pairs, s1_dict, s23_dict)
     X_train = X_train_df[FEATURE_COLUMNS].values
@@ -196,7 +252,7 @@ def train_matching_model(
         max_depth=6,
         subsample=0.8,
         colsample_bytree=0.8,
-        scale_pos_weight=min(pos_weight, 5.0),
+        scale_pos_weight=min(pos_weight, 4.0),
         random_state=random_state,
         n_jobs=-1,
         verbose=-1
@@ -213,7 +269,7 @@ def train_matching_model(
     best_stats = {}
 
     threshold_grid = np.linspace(0.40, 0.95, 23)
-    for thresh in tqdm(threshold_grid, desc="Sweeping thresholds"):
+    for thresh in tqdm(threshold_grid, desc="Sweeping thresholds", leave=True):
         pred_map = {s1_id: set() for s1_id in val_s1_ids}
         above_thresh = X_val_df[X_val_df['match_prob'] >= thresh]
         for _, row in above_thresh.iterrows():
@@ -231,10 +287,10 @@ def train_matching_model(
     print("\n=======================================================")
     print("                TRAINING & EVALUATION RESULTS          ")
     print("=======================================================")
-    print(f"  • Optimal Decision Threshold (θ*): {best_threshold:.3f}")
-    print(f"  • Validation Macro F_0.5:          {best_stats.get('macro_f05', 0.0):.4f}")
-    print(f"  • Validation Precision:            {best_stats.get('macro_precision', 0.0):.4f}")
-    print(f"  • Validation Recall:               {best_stats.get('macro_recall', 0.0):.4f}")
+    print(f"  * Optimal Decision Threshold (theta*): {best_threshold:.3f}")
+    print(f"  * Validation Macro F_0.5:              {best_stats.get('macro_f05', 0.0):.4f}")
+    print(f"  * Validation Precision:                {best_stats.get('macro_precision', 0.0):.4f}")
+    print(f"  * Validation Recall:                   {best_stats.get('macro_recall', 0.0):.4f}")
 
     # Save artifacts
     model_path = os.path.join(model_output_dir, 'lgbm_matcher.pkl')
@@ -260,4 +316,10 @@ def train_matching_model(
 
 
 if __name__ == '__main__':
-    train_matching_model()
+    import argparse
+    parser = argparse.ArgumentParser(description="Train LightGBM Matching Model & Tune Threshold.")
+    parser.add_argument("--sample-limit", type=int, default=50000, help="Number of S1 reference entities to train on (default: 50,000 for fast ~45s convergence; use -1 for full 2.2M dataset)")
+    args = parser.parse_args()
+    
+    limit = None if args.sample_limit == -1 else args.sample_limit
+    train_matching_model(sample_limit=limit)

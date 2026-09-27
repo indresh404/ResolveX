@@ -44,28 +44,23 @@ def main():
     print("        RESOLVEX: PIPELINE EXECUTION              ")
     print("==================================================")
 
-    matching_df, candidate_df = run_inference(
+    run_inference(
         s1_path=args.test_s1,
         s2_path=args.test_s2,
         s3_path=args.test_s3,
         model_path=args.model_path,
         config_path=args.config_path,
-        override_threshold=args.threshold
+        override_threshold=args.threshold,
+        output_dir=args.output_dir
     )
 
     matching_path = os.path.join(args.output_dir, "matching_results.tsv")
     candidate_path = os.path.join(args.output_dir, "candidate_pairs.tsv")
 
-    print(f"\n>>> Saving outputs to {args.output_dir}...")
-    matching_df.to_csv(matching_path, sep="\t", index=False)
-    candidate_df.to_csv(candidate_path, sep="\t", index=False)
-    print(f"  [+] Saved {matching_path} ({len(matching_df):,} rows)")
-    print(f"  [+] Saved {candidate_path} ({len(candidate_df):,} rows)")
-
     # Run submission validator
     validator_script = "student_resource/utils/validate_submission.py"
     if os.path.exists(validator_script):
-        print("\n>>> Running Submission Validation Check...")
+        print("\n>>> Running Challenge Submission Validator...")
         test_dir = os.path.dirname(args.test_s1)
         cmd = [
             sys.executable,
@@ -82,7 +77,7 @@ def main():
             if res.returncode == 0:
                 print("[SUCCESS] Output files successfully passed all challenge constraints!")
             else:
-                print(f"[WARNING] Validator exited with status {res.returncode}")
+                print(f"[STATUS] Validator exit code: {res.returncode}")
         except Exception as e:
             print(f"Error running validator: {e}")
     else:

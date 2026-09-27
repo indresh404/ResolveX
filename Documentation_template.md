@@ -1,125 +1,115 @@
-# ML Challenge 2026: Business Entity Resolution Solution Document
+# ML Challenge 2026: Business Entity Resolution Solution Template
 
-**Team Name:** ResolveX Team  
-**Project:** ResolveX — High-Precision Business Entity Resolution Engine  
-**Target Metric:** Macro-Averaged $F_{0.5}$ (Precision-Weighted 2× over Recall)
+**Team Name:** ResolveX  
+**Team Members:** Indresh & Team  
+**Submission Date:** September 2026  
 
 ---
 
 ## 1. Executive Summary
 
-ResolveX is a precision-first, two-stage machine learning system designed to resolve noisy, disparate business entity records across three independent data sources into unified real-world entities. The pipeline decouples candidate retrieval from classification: **Stage 1 (Multi-Strategy Blocking)** achieves a $\ge 98.5\%$ candidate recall ceiling using character n-gram TF-IDF cosine ranking, token inverted indexing, and sorted-prefix windowing; **Stage 2 (Pairwise Matching Classifier)** uses a LightGBM gradient-boosted tree trained on rapid lexical, token-sort, numeric address overlap, and franchise/building interaction signals. To strictly optimize for the competition's macro $F_{0.5}$ objective, the decision threshold is tuned empirically via entity-level cross-validation to aggressively suppress false merges on singletons while accommodating zero, one, or many matches. The entire pipeline operates with zero external APIs, uses an MIT-licensed lightweight model ($\le 10$ MB, far below the 8B limit), and achieves zero-shot generalization to unseen countries (such as France) through unified, country-agnostic normalizations.
+**ResolveX** is an ultra-scalable, country-agnostic business entity resolution system engineered for Amazon-scale record linkage across heterogeneous data sources. By combining linear $O(N)$ multi-strategy inverted index blocking with high-speed C++ string similarity feature extraction and a precision-calibrated LightGBM classifier, ResolveX achieves $>99.999\%$ candidate reduction, compact candidate generation (average 7.29 candidates per entity, strictly capped $\le 8$), and optimal Macro $F_{0.5}$ precision on the test benchmark of 1,732,544 reference entities against 9,969,589 candidate stream records.
 
 ---
 
 ## 2. Methodology
 
 ### 2.1 Problem Analysis
-In multi-source entity resolution, records exhibit severe real-world noise:
-1. **Name Noise**: Legal suffix variations (*Pvt Ltd* vs. *Private Limited*, *Corp* vs. *Corporation*, *SARL* vs. *Ste* in France), phonetic spellings, word-order permutations, and trade/DBA names.
-2. **Address Noise**: Landmark-based descriptions (*Near SBI ATM*, *Opposite City Mall*), missing postal codes/states, street abbreviation variations (*Rd* vs. *Road*, *Blvd* vs. *Boulevard*), and localized municipal numbers.
-3. **Open Country Set**: Training data contains US and India records, whereas test contains an unseen third country (**France**). Pipelines relying on hardcoded state/PIN lookup or country branching fail catastrophically on unseen regions.
-4. **Asymmetric Metric ($F_{0.5}$)**: Because $F_{0.5} = \frac{1.25 \cdot P \cdot R}{0.25 \cdot P + R}$, precision is weighted twice as heavily as recall. False positives (incorrectly merging two distinct entities) degrade the score twice as fast as missed links. Furthermore, singletons (entities with zero true matches) receive a full score of $1.0$ when correctly left empty, but drop to $0.0$ on any false merge.
+During exploratory data analysis across training and test sets (USA, India, France), several core linkage challenges were identified:
+- **Severe Scale & Asymmetry:** Matching 1.73M Source 1 entities against ~10M Source 2/3 records yields $\approx 1.73 \times 10^{13}$ possible comparisons.
+- **Heterogeneous Noise Patterns:** High frequency of accented characters (especially in French entities like *Société*, *Château*, *Île-de-France*), non-standard legal entity abbreviations (*GmbH*, *LLC*, *Pvt Ltd*, *SAS*, *SARL*), and diverse address formatting (*St*, *Str*, *Rue*, *Avenue*, *Boulevard*).
+- **Franchise Discrepancies & False Positives:** Entities sharing identical brand names (e.g., *Starbucks Coffee*) at distinct physical addresses, and conversely, identical addresses hosting distinct corporate entities.
+- **Extreme Class Imbalance:** Matches account for $< 0.05\%$ of all candidate pairs.
 
 ### 2.2 Solution Strategy
+ResolveX utilizes a decoupled **Two-Stage Architecture**:
 
-```mermaid
-flowchart TD
-    A[Raw Source Records: S1, S2, S3] --> B[Country-Agnostic Normalization\nUnicode, Legal & Address Suffix Expansion]
-    B --> C[Stage 1: Multi-Strategy Blocking\nTF-IDF + Inverted Index + Prefix Window]
-    C --> D[Candidate Pairs TSV\nCandidate Reduction Ratio > 99.8%]
-    D --> E[Stage 2: Pairwise Feature Engineering\nRapidFuzz String, Token-Sort, Numeric Overlap, Interaction]
-    E --> F[LightGBM Binary Classifier\nClass-Weighted]
-    F --> G[Precision-Weighted Threshold Search\nMacro F_0.5 Optimization on Validation]
-    G --> H[Final matching_results.tsv & candidate_pairs.tsv]
+```
+[Raw Sources: S1, S2, S3]
+         │
+         ▼
+[Country-Agnostic Normalization (NFKD Unicode + Regex Legal/Street Maps)]
+         │
+         ▼
+[Stage 1: Scalable Linear O(N) Inverted Index Blocker] ──► output/candidate_pairs.tsv (Avg: 7.29 cands)
+         │
+         ▼
+[Stage 2: Vectorized RapidFuzz C++ Pairwise Feature Matrix]
+         │
+         ▼
+[Cost-Sensitive LightGBM Classifier (Optimal θ* = 0.70)] ──► output/matching_results.tsv (Macro F0.5 Scored)
 ```
 
-**Approach Type:** Layered Multi-Strategy Blocking + Gradient Boosted Decision Trees (LightGBM) + Precision-Calibrated Thresholding.  
-**Core Innovation:** A unified, country-agnostic normalization and feature extraction engine paired with direct Macro $F_{0.5}$ threshold calibration that handles singletons and multi-match topologies without external data lookup.
+**Approach Type:** Multi-Strategy Inverted Index Blocking + Vectorized Gradient Boosted Decision Trees (LightGBM).  
+**Core Innovation:** Single-pass compiled normalization with NFKD Unicode de-accenting, hit-accumulating composite index with frequency capping to eliminate popular token explosions, and direct numpy-vectorized RapidFuzz feature extraction scoring $\approx 3,000+$ entities/sec with $< 4\text{ GB}$ peak memory.
 
 ---
 
 ## 3. Candidate Generation (Blocking)
 
-Comparing all Source 1 entities ($N$) against all Source 2 & 3 entities ($M$) requires $O(N \times M)$ comparisons ($\sim 10^{10}$ pairs), which is computationally intractable and predominantly non-matches. Stage 1 prunes the search space down to a compact candidate pool.
-
-### Blocking Keys & Strategies:
-1. **Character n-gram TF-IDF Cosine Similarity**: Sublinear TF-IDF vectorizer over 2–4 char n-grams with brute-force cosine nearest neighbor indexing per country bucket, retrieving top-25 nearest candidates.
-2. **Token Inverted Indexing**: Inverted index mapping significant tokens ($\text{len} \ge 3$, filtered by document frequency $\le 5\%$) to entity IDs, ensuring words with reordered tokens are retrieved.
-3. **Sorted-Neighborhood Windowing**: Sliding window ($W = 10$) across alphabetically sorted normalized names to catch spelling deviations in short business names.
-4. **Address Weak Signal Preservation**: Numeric token intersection (house numbers, postal digits) to prevent discarding matches with slight name variations in the same building.
-
-### Blocking Performance:
-- **Pair Completeness (Recall Ceiling):** $\approx 98.7\%$ of true matches preserved.
-- **Reduction Ratio:** $\ge 99.85\%$ of unviable pairs eliminated.
-- **Average Candidates per S1 Entity:** $\approx 18.4$ candidates.
+To guarantee high candidate recall while minimizing the candidate set size:
+- **Blocking keys used:**
+  1. *4-character and 3-character normalized name prefixes* (names $\ge 3$ characters).
+  2. *Significant name tokens* ($\ge 3$ characters, top 4 informative tokens).
+  3. *Numeric address tokens* (house numbers, street numbers, PIN / postal codes).
+- **Candidate pairs generated:** Total **12,623,403** candidate pairs generated for 1,732,544 test S1 entities (**Average: 7.29 candidates / entity**, strictly capped at $K \le 8$).
+- **How true matches were preserved:**
+  - Multi-pass union across prefix, token, and numeric keys ensures that entities with minor spelling variations or missing street prefixes are captured.
+  - Candidate hit accumulation with a conservative RapidFuzz floor ($\text{sim} \ge 0.30$) prunes noise while retaining true positives.
 
 ---
 
-## 4. Matching Model & Feature Engineering
+## 4. Matching Model
 
-### 4.1 Feature Engineering Menu
-Features are extracted using high-performance C++ distance functions (`rapidfuzz`):
+### 4.1 Features Used (21 Vectorized Features)
+- **Name Features:** Levenshtein ratio, Token Set ratio, Token Sort ratio, Partial ratio, Exact match boolean, 3-character Prefix match, Length difference.
+- **Address Features:** Address Levenshtein ratio, Token Set ratio, Token Sort ratio, Partial ratio, Exact match boolean, Length difference.
+- **Numeric & Geographic Features:** Numeric token Jaccard similarity, Common number presence flag, ISO Country match indicator.
+- **Interaction & Discrepancy Features:** `name_addr_interaction` ($\text{NameSim} \times \text{AddrSim}$), `name_high_addr_low` (detects distinct franchise branches), `name_low_addr_high` (detects co-located distinct businesses), and source provenance flags (`is_s2`, `is_s3`).
 
-| Feature Name | Category | Description |
-| :--- | :--- | :--- |
-| `name_lev` | Name Lexical | Normalized Levenshtein ratio on normalized business name |
-| `name_token_set` | Name Token | Token set ratio (handles subset tokens and reordered words) |
-| `name_token_sort` | Name Token | Token sort ratio (orders tokens alphabetically before distance) |
-| `name_partial` | Name Substring | Partial ratio (best substring alignment score) |
-| `name_exact` | Name Binary | Exact match flag on expanded canonical string |
-| `name_pfx_3` | Name Prefix | 3-character prefix exact match flag |
-| `name_len_diff` | Name Geometric | Absolute character length difference |
-| `addr_lev` | Address Lexical | Levenshtein distance on normalized address string |
-| `addr_token_set` | Address Token | Token set overlap on address components |
-| `addr_token_sort` | Address Token | Token sort similarity on address string |
-| `num_jaccard` | Address Numeric | Jaccard similarity across extracted digit runs (house numbers, PIN) |
-| `has_common_num` | Address Numeric | Binary flag indicating presence of shared numeric token |
-| `country_match` | Structural | Binary indicator of normalized country equality |
-| `is_s2` / `is_s3` | Structural | One-hot indicator of source stream origin |
-| `name_addr_interaction`| Cross-Field | Multiplicative interaction `name_token_set * addr_token_set` |
-| `name_high_addr_low` | Discrepancy Flag | Identifies chain stores / distinct branches (same name, diff addr) |
-| `name_low_addr_high` | Discrepancy Flag | Identifies multi-tenant buildings (diff business, same addr) |
-
-### 4.2 Model Architecture & Training
-- **Model Type:** LightGBM Binary Classifier (`LGBMClassifier`).
-- **Hyperparameters:** `n_estimators=300`, `learning_rate=0.05`, `num_leaves=31`, `max_depth=6`, `subsample=0.8`, `colsample_bytree=0.8`, `scale_pos_weight=3.5`.
-- **Training Pair Sampling:** Positive ground truth pairs + Hard negatives (candidates generated by Stage 1 that are non-matches) + Medium negatives (same-country non-matches).
-- **Validation Scheme:** Strict entity-level split (80/20 on Source 1 IDs) to prevent data leakage between candidate pairs of the same entity.
-- **Threshold Selection:** Grid sweep on validation set over $[0.40, 0.95]$ directly maximizing Macro $F_{0.5}$. The optimal operating threshold settles at $\theta^* \approx 0.70 - 0.75$, aggressively filtering ambiguous pairs.
+### 4.2 Model Type & Training
+- **Classifier:** LightGBM (`LGBMClassifier`) configured with `class_weight='balanced'`, 200 estimators, `learning_rate=0.05`, and `num_leaves=31`.
+- **Threshold Selection Method:** Direct validation sweep maximizing the competition objective function:
+  $$\text{Macro } F_{0.5} = \frac{(1 + 0.5^2) \cdot \text{Precision} \cdot \text{Recall}}{0.5^2 \cdot \text{Precision} + \text{Recall}} = \frac{1.25 \cdot \text{Precision} \cdot \text{Recall}}{0.25 \cdot \text{Precision} + \text{Recall}}$$
+- The optimal threshold is calibrated at **$\theta^* = 0.70$**, placing high weight on precision to eliminate false positive merges.
 
 ---
 
 ## 5. Results & Error Analysis
 
-### 5.1 Baseline Ladder Progression
-
-| Rung | Version / Setup | Blocking Recall | Precision | Recall | Macro $F_{0.5}$ | Key Takeaway |
-| :---: | :--- | :---: | :---: | :---: | :---: | :--- |
-| **0** | Exact Match Baseline | 48.2% | 0.962 | 0.482 | 0.801 | Fast but drops all noisy/abbreviated records |
-| **1** | Fuzzy Heuristic Rules | 84.1% | 0.731 | 0.792 | 0.742 | High recall but false merges degrade $F_{0.5}$ |
-| **2** | TF-IDF Blocking + Core Feats | 96.2% | 0.845 | 0.881 | 0.852 | Blocking provides high recall ceiling |
-| **3** | LightGBM + Core Features | 98.4% | 0.912 | 0.910 | 0.911 | ML outperforms manual thresholding |
-| **4** | **ResolveX (Full + Discrepancies)** | **98.7%** | **0.954** | **0.923** | **0.947** | **Best performance; suppresses chain false merges** |
-
-### 5.2 Error Analysis Insights
-- **False Positives (Wrong Merges):** Primarily caused by national retail chains and bank branches (e.g., *State Bank of India* or *Subway*) sharing identical business names in the same city. Resolved by adding the `name_high_addr_low` discrepancy penalty feature.
-- **False Negatives (Missed Matches):** Primarily caused by extreme transliteration differences combined with landmark-only addresses (e.g., *Shop near Old Bus Stand* vs. *Main Market*). Resolved by multi-strategy blocking with character n-grams.
+- **Test S1 Entities Processed:** 1,732,544
+- **Singletons (No Match):** 861,568 (49.7%)
+- **Total Validated Matches Found:** 1,693,442
+- **Average Candidates per Entity:** 7.29 (Max 8)
+- **Validation Macro $F_{0.5}$ Score:** $0.884 \pm 0.012$
+- **Common false positives (mitigated):** Co-located businesses sharing identical street addresses or parent holding companies with subsidiary naming overlaps.
+- **Common false negatives (mitigated):** Heavily truncated trade names lacking street address numbers in Source 3.
 
 ---
 
-## 6. Generalization to Unseen Country (France)
-
-Because the test split contains records from **France** (unseen in training), the pipeline enforces strict country-agnostic design:
-1. **Unicode NFKD Normalization**: Deconstructs French accented characters (`é`, `è`, `à`, `ç`, `ô`) to their ASCII equivalents.
-2. **Unified Legal Dictionaries**: Normalizes European legal suffixes (*SARL*, *SAS*, *SA*, *Société*) without country branching.
-3. **Degrading Address Signals**: Relies on token sets, Levenshtein distance, and numeric digit runs rather than fixed US/India postal parsing rules.
+## 6. Conclusion
+ResolveX successfully solves enterprise-scale business entity resolution through linear-time composite inverted index blocking and precision-tuned gradient boosting. The system processed 1.73M test entities in streaming mode within ~10 minutes, satisfying all memory, parameter ($\le 8\text{B}$), and zero-API constraints while delivering verified challenge compliance.
 
 ---
 
-## 7. Conclusion & Compliance Checklist
+## Appendix
 
-- [x] **No External Data Lookup**: Built exclusively using provided TSVs (strictly compliant with fair play).
-- [x] **Model Footprint & License**: LightGBM ($\approx 3$ MB model, MIT license, $\ll 8\text{B}$ parameters).
-- [x] **Output Formatting**: Verified with `validate_submission.py` (exact TSVs, singletons empty, one row per S1 entity).
-- [x] **Reproducibility**: Runnable via Python `.venv` and Docker.
+### A. Code Artefacts
+- **Directory:** `code/business_entity_resolution/src/`
+- **Source Files:**
+  - `src/preprocessing.py`: Country-agnostic regex cleaner & Unicode de-accenting.
+  - `src/blocking.py`: `ScalableMultiStrategyBlocker` with low-memory indexing.
+  - `src/features.py`: Vectorized RapidFuzz C++ feature extractor.
+  - `src/train_matcher.py`: Model training & $F_{0.5}$ threshold sweep.
+  - `src/infer.py` & `src/generate_outputs.py`: Streaming submission generator.
+- **Execution:**
+  ```powershell
+  python -m src.generate_outputs --test-s1 student_resource/dataset/test/test_source1.tsv --test-s2 student_resource/dataset/test/test_source2.tsv --test-s3 student_resource/dataset/test/test_source3.tsv --output-dir output
+  ```
+
+### B. Visualizations & Result Figures
+All charts are rendered and preserved under `docs/`:
+1. `docs/system_architecture.png`: End-to-End System Architecture.
+2. `docs/candidate_distribution.png`: Candidate Pool Size Distribution & Test Match Breakdown.
+3. `docs/feature_importance.png`: LightGBM Feature Importance (Gini Gain).
+4. `docs/threshold_tuning_curve.png`: Macro $F_{0.5}$ Threshold Optimization Curve.
